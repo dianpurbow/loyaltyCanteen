@@ -3,8 +3,16 @@
 import React, { useState } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { PublicKey, Transaction } from '@solana/web3.js';
-import { getAssociatedTokenAddress, createTransferInstruction } from '@solana/spl-token';
+import { PublicKey, Transaction, SystemProgram, Keypair } from '@solana/web3.js';
+import { 
+    getAssociatedTokenAddress, 
+    createTransferInstruction,
+    MINT_SIZE,
+    TOKEN_PROGRAM_ID,
+    createInitializeMintInstruction,
+    createAssociatedTokenAccountInstruction,
+    createMintToInstruction
+} from '@solana/spl-token';
 
 export default function KantinApp() {
     const { connection } = useConnection();
@@ -14,6 +22,7 @@ export default function KantinApp() {
     const [amount, setAmount] = useState('');
     const [status, setStatus] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [newMintAddress, setNewMintAddress] = useState(null);
 
     const INDRA_COIN_MINT_ADDRESS = new PublicKey(
         process.env.NEXT_PUBLIC_INDRA_COIN_MINT_ADDRESS || "11111111111111111111111111111111"
@@ -42,9 +51,23 @@ export default function KantinApp() {
             const senderATA = await getAssociatedTokenAddress(INDRA_COIN_MINT_ADDRESS, publicKey);
             
             // 2. Cari ATA penerima (Mahasiswa)
-            // Catatan: Asumsinya ATA penerima sudah ada. Jika belum, dalam skenario nyata
-            // Kantin harus mensubsidi biaya pembuatan ATA (createAssociatedTokenAccountInstruction)
             const recipientATA = await getAssociatedTokenAddress(INDRA_COIN_MINT_ADDRESS, recipientPubKey);
+
+            const transaction = new Transaction();
+
+            // Cek apakah Mahasiswa sudah punya "brankas" (ATA) untuk koin ini
+            // Jika belum, Kantin akan membayarkan biaya pembuatannya secara otomatis
+            const recipientAccountInfo = await connection.getAccountInfo(recipientATA);
+            if (!recipientAccountInfo) {
+                transaction.add(
+                    createAssociatedTokenAccountInstruction(
+                        publicKey,      // Payer (Kantin)
+                        recipientATA,   // ATA Mahasiswa
+                        recipientPubKey,// Pemilik ATA (Mahasiswa)
+                        INDRA_COIN_MINT_ADDRESS
+                    )
+                );
+            }
 
             // 3. Buat Instruksi Transfer
             const transferIx = createTransferInstruction(
@@ -52,11 +75,11 @@ export default function KantinApp() {
                 recipientATA,
                 publicKey,
                 transferAmount,
-                [] // tidak ada multisig
+                [] 
             );
 
-            // 4. Buat dan Kirim Transaksi
-            const transaction = new Transaction().add(transferIx);
+            // 4. Tambahkan ke transaksi dan Kirim
+            transaction.add(transferIx);
             
             const signature = await sendTransaction(transaction, connection);
             setStatus(`Berhasil! Menunggu konfirmasi jaringan...`);
@@ -75,6 +98,74 @@ export default function KantinApp() {
         } catch (error) {
             console.error(error);
             setStatus(`❌ Gagal: ${error.message || "Pastikan dompet Mahasiswa valid dan Kantin memiliki cukup saldo."}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleCreateNewToken = async () => {
+        if (!publicKey) return;
+        try {
+            setIsLoading(true);
+            setStatus('Sedang mencetak koin baru ke Blockchain...');
+
+            const mintKeypair = Keypair.generate();
+            const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+            
+            const transaction = new Transaction().add(
+                SystemProgram.createAccount({
+                    fromPubkey: publicKey,
+                    newAccountPubkey: mintKeypair.publicKey,
+                    space: MINT_SIZE,
+                    lamports,
+                    programId: TOKEN_PROGRAM_ID,
+                }),
+                createInitializeMintInstruction(
+                    mintKeypair.publicKey,
+                    0, // 0 desimal
+                    publicKey, // mint authority
+                    publicKey, // freeze authority
+                    TOKEN_PROGRAM_ID
+                )
+            );
+
+            // Langsung berikan 1 Juta Koin ke Kantin
+            const ata = await getAssociatedTokenAddress(mintKeypair.publicKey, publicKey);
+            transaction.add(
+                createAssociatedTokenAccountInstruction(
+                    publicKey,
+                    ata,
+                    publicKey,
+                    mintKeypair.publicKey
+                ),
+                createMintToInstruction(
+                    mintKeypair.publicKey,
+                    ata,
+                    publicKey,
+                    1000000 
+                )
+            );
+
+            const latestBlockHash = await connection.getLatestBlockhash();
+            transaction.recentBlockhash = latestBlockHash.blockhash;
+            transaction.feePayer = publicKey;
+            
+            // Tanda tangan transaksi dengan keypair mint baru
+            transaction.partialSign(mintKeypair);
+
+            const signature = await sendTransaction(transaction, connection);
+            await connection.confirmTransaction({
+                blockhash: latestBlockHash.blockhash,
+                lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+                signature: signature,
+            });
+
+            const newMint = mintKeypair.publicKey.toBase58();
+            setNewMintAddress(newMint);
+            setStatus(`✅ Token Dibuat! Mint: ${newMint}`);
+        } catch (error) {
+            console.error(error);
+            setStatus(`❌ Gagal mencetak: ${error.message}`);
         } finally {
             setIsLoading(false);
         }
@@ -138,6 +229,26 @@ export default function KantinApp() {
                                 {status}
                             </div>
                         )}
+
+                        {newMintAddress && (
+                            <div className="status-message success" style={{marginTop: '10px', wordBreak: 'break-all'}}>
+                                <strong>⚠️ SIMPAN MINT ADDRESS INI:</strong><br/>
+                                {newMintAddress}<br/><br/>
+                                <em>Masukkan ini ke Vercel Environment Variables sebagai NEXT_PUBLIC_INDRA_COIN_MINT_ADDRESS</em>
+                            </div>
+                        )}
+
+                        <div style={{ marginTop: '30px', paddingTop: '20px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                            <p style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '10px' }}>Setup Awal (Khusus Demo):</p>
+                            <button 
+                                onClick={handleCreateNewToken}
+                                className="action-btn"
+                                style={{ background: 'transparent', border: '1px solid #f472b6', width: '100%' }}
+                                disabled={isLoading}
+                            >
+                                🌟 Inisialisasi 1 Juta Koin Baru
+                            </button>
+                        </div>
                     </div>
                 ) : (
                     <div className="dashboard-section empty-state">
