@@ -23,6 +23,7 @@ export default function KantinApp() {
     const [status, setStatus] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [newMintAddress, setNewMintAddress] = useState(null);
+    const [txSignature, setTxSignature] = useState(null);
 
     const INDRA_COIN_MINT_ADDRESS = new PublicKey(
         process.env.NEXT_PUBLIC_INDRA_COIN_MINT_ADDRESS || "11111111111111111111111111111111"
@@ -39,6 +40,7 @@ export default function KantinApp() {
         try {
             setIsLoading(true);
             setStatus('Memproses transaksi...');
+            setTxSignature(null);
 
             const recipientPubKey = new PublicKey(recipientAddress);
             const transferAmount = parseInt(amount);
@@ -92,12 +94,14 @@ export default function KantinApp() {
                 signature: signature,
             });
 
-            setStatus(`✅ Transfer Sukses! Signature: ${signature.substring(0, 15)}...`);
+            setStatus(`✅ Transfer Sukses!`);
+            setTxSignature(signature);
             setRecipientAddress('');
             setAmount('');
         } catch (error) {
             console.error(error);
             setStatus(`❌ Gagal: ${error.message || "Pastikan dompet Mahasiswa valid dan Kantin memiliki cukup saldo."}`);
+            setTxSignature(null);
         } finally {
             setIsLoading(false);
         }
@@ -225,8 +229,22 @@ export default function KantinApp() {
                         </form>
 
                         {status && (
-                            <div className={`status-message ${status.includes('❌') ? 'error' : 'success'}`}>
+                            <div className={`status-message ${typeof status === 'string' && status.includes('❌') ? 'error' : 'success'}`}>
                                 {status}
+                                {txSignature && (
+                                    <div style={{ marginTop: '8px', fontSize: '0.85em', wordBreak: 'break-all' }}>
+                                        <a 
+                                            href={`https://explorer.solana.com/tx/${txSignature}?cluster=devnet`} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                            style={{ color: '#93c5fd', textDecoration: 'underline' }}
+                                        >
+                                            Lihat di Solana Explorer
+                                        </a>
+                                        <br/>
+                                        <span style={{ fontSize: '0.8em', opacity: 0.8 }}>{txSignature}</span>
+                                    </div>
+                                )}
                             </div>
                         )}
 
